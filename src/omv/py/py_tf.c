@@ -28,17 +28,19 @@ typedef struct py_tf_model_obj {
     mp_obj_base_t base;
     unsigned char *model_data;
     unsigned int model_data_len, height, width, channels;
+    bool signed_or_unsigned;
 } py_tf_model_obj_t;
 
 STATIC void py_tf_model_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind)
 {
     py_tf_model_obj_t *self = self_in;
     mp_printf(print,
-              "{\"len\":%d, \"height\":%d, \"width\":%d, \"channels\":%d}",
+              "{\"len\":%d, \"height\":%d, \"width\":%d, \"channels\":%d, \"signed\":%d}",
               self->model_data_len,
               self->height,
               self->width,
-              self->channels);
+              self->channels,
+              self->signed_or_unsigned);
 }
 
 // TF Classification Object
@@ -163,7 +165,8 @@ STATIC mp_obj_t int_py_tf_load(mp_obj_t path_obj, bool alloc_mode, bool helper_m
                                                  tensor_arena_size,
                                                  &tf_model->height,
                                                  &tf_model->width,
-                                                 &tf_model->channels),
+                                                 &tf_model->channels,
+                                                 &tf_model->signed_or_unsigned),
                         py_tf_putchar_buffer - (PY_TF_PUTCHAR_BUFFER_LEN - py_tf_putchar_buffer_len));
 
     fb_free(); // free fb_alloc_all()
@@ -211,12 +214,14 @@ typedef struct py_tf_input_data_callback_data {
 } py_tf_input_data_callback_data_t;
 
 STATIC void py_tf_input_data_callback(void *callback_data,
-                                      unsigned char *model_input,
+                                      void *model_input,
                                       const unsigned int input_height,
                                       const unsigned int input_width,
-                                      const unsigned int input_channels)
+                                      const unsigned int input_channels,
+                                      const bool signed_or_unsigned)
 {
     py_tf_input_data_callback_data_t *arg = (py_tf_input_data_callback_data_t *) callback_data;
+    int shift = signed_or_unsigned ? 128 : 0;
 
     float xscale = input_width / ((float) arg->roi->w);
     float yscale = input_height / ((float) arg->roi->h);
@@ -235,15 +240,15 @@ STATIC void py_tf_input_data_callback(void *callback_data,
                     int index = row + x;
                     switch (input_channels) {
                         case 1: {
-                            model_input[index] = COLOR_BINARY_TO_GRAYSCALE(pixel);
+                            ((uint8_t *) model_input)[index] = COLOR_BINARY_TO_GRAYSCALE(pixel) ^ shift;
                             break;
                         }
                         case 3: {
                             int index_3 = index * 3;
                             pixel = COLOR_BINARY_TO_RGB565(pixel);
-                            model_input[index_3 + 0] = COLOR_RGB565_TO_R8(pixel);
-                            model_input[index_3 + 1] = COLOR_RGB565_TO_G8(pixel);
-                            model_input[index_3 + 2] = COLOR_RGB565_TO_B8(pixel);
+                            ((uint8_t *) model_input)[index_3 + 0] = COLOR_RGB565_TO_R8(pixel) ^ shift;
+                            ((uint8_t *) model_input)[index_3 + 1] = COLOR_RGB565_TO_G8(pixel) ^ shift;
+                            ((uint8_t *) model_input)[index_3 + 2] = COLOR_RGB565_TO_B8(pixel) ^ shift;
                             break;
                         }
                         default: {
@@ -263,15 +268,15 @@ STATIC void py_tf_input_data_callback(void *callback_data,
                     int index = row + x;
                     switch (input_channels) {
                         case 1: {
-                            model_input[index] = pixel;
+                            ((uint8_t *) model_input)[index] = pixel ^ shift;
                             break;
                         }
                         case 3: {
                             int index_3 = index * 3;
                             pixel = COLOR_GRAYSCALE_TO_RGB565(pixel);
-                            model_input[index_3 + 0] = COLOR_RGB565_TO_R8(pixel);
-                            model_input[index_3 + 1] = COLOR_RGB565_TO_G8(pixel);
-                            model_input[index_3 + 2] = COLOR_RGB565_TO_B8(pixel);
+                            ((uint8_t *) model_input)[index_3 + 0] = COLOR_RGB565_TO_R8(pixel) ^ shift;
+                            ((uint8_t *) model_input)[index_3 + 1] = COLOR_RGB565_TO_G8(pixel) ^ shift;
+                            ((uint8_t *) model_input)[index_3 + 2] = COLOR_RGB565_TO_B8(pixel) ^ shift;
                             break;
                         }
                         default: {
@@ -291,14 +296,14 @@ STATIC void py_tf_input_data_callback(void *callback_data,
                     int index = row + x;
                     switch (input_channels) {
                         case 1: {
-                            model_input[index] = COLOR_RGB565_TO_GRAYSCALE(pixel);
+                            ((uint8_t *) model_input)[index] = COLOR_RGB565_TO_GRAYSCALE(pixel) ^ shift;
                             break;
                         }
                         case 3: {
                             int index_3 = index * 3;
-                            model_input[index_3 + 0] = COLOR_RGB565_TO_R8(pixel);
-                            model_input[index_3 + 1] = COLOR_RGB565_TO_G8(pixel);
-                            model_input[index_3 + 2] = COLOR_RGB565_TO_B8(pixel);
+                            ((uint8_t *) model_input)[index_3 + 0] = COLOR_RGB565_TO_R8(pixel) ^ shift;
+                            ((uint8_t *) model_input)[index_3 + 1] = COLOR_RGB565_TO_G8(pixel) ^ shift;
+                            ((uint8_t *) model_input)[index_3 + 2] = COLOR_RGB565_TO_B8(pixel) ^ shift;
                             break;
                         }
                         default: {
@@ -320,19 +325,21 @@ typedef struct py_tf_classify_output_data_callback_data {
 } py_tf_classify_output_data_callback_data_t;
 
 STATIC void py_tf_classify_output_data_callback(void *callback_data,
-                                                unsigned char *model_output,
+                                                void *model_output,
                                                 const unsigned int output_height,
                                                 const unsigned int output_width,
-                                                const unsigned int output_channels)
+                                                const unsigned int output_channels,
+                                                const bool signed_or_unsigned)
 {
     py_tf_classify_output_data_callback_data_t *arg = (py_tf_classify_output_data_callback_data_t *) callback_data;
+    int shift = signed_or_unsigned ? 128 : 0;
 
     PY_ASSERT_TRUE_MSG(output_height == 1, "Expected model output height to be 1!");
     PY_ASSERT_TRUE_MSG(output_width == 1, "Expected model output width to be 1!");
 
     arg->out = mp_obj_new_list(output_channels, NULL);
     for (unsigned int i = 0; i < output_channels; i++) {
-        ((mp_obj_list_t *) arg->out)->items[i] = mp_obj_new_float(model_output[i] / 255.0f);
+        ((mp_obj_list_t *) arg->out)->items[i] = mp_obj_new_float((((uint8_t *) model_output)[i] ^ shift) / 255.0f);
     }
 }
 
@@ -422,12 +429,14 @@ typedef struct py_tf_segment_output_data_callback_data {
 } py_tf_segment_output_data_callback_data_t;
 
 STATIC void py_tf_segment_output_data_callback(void *callback_data,
-                                               unsigned char *model_output,
+                                               void *model_output,
                                                const unsigned int output_height,
                                                const unsigned int output_width,
-                                               const unsigned int output_channels)
+                                               const unsigned int output_channels,
+                                               const bool signed_or_unsigned)
 {
     py_tf_segment_output_data_callback_data_t *arg = (py_tf_segment_output_data_callback_data_t *) callback_data;
+    int shift = signed_or_unsigned ? 128 : 0;
 
     arg->out = mp_obj_new_list(output_channels, NULL);
     for (unsigned int i = 0; i < output_channels; i++) {
@@ -443,7 +452,7 @@ STATIC void py_tf_segment_output_data_callback(void *callback_data,
             uint8_t *row_ptr = IMAGE_COMPUTE_GRAYSCALE_PIXEL_ROW_PTR(&img, y);
             for (unsigned int x = 0; i < output_width; x++) {
                 unsigned int col = x * output_channels;
-                IMAGE_PUT_GRAYSCALE_PIXEL_FAST(row_ptr, x, model_output[row + col + i]);
+                IMAGE_PUT_GRAYSCALE_PIXEL_FAST(row_ptr, x, ((uint8_t *) model_output)[row + col + i] ^ shift);
             }
         }
     }
@@ -488,17 +497,20 @@ mp_obj_t py_tf_len(mp_obj_t self_in) { return mp_obj_new_int(((py_tf_model_obj_t
 mp_obj_t py_tf_height(mp_obj_t self_in) { return mp_obj_new_int(((py_tf_model_obj_t *) self_in)->height); }
 mp_obj_t py_tf_width(mp_obj_t self_in) { return mp_obj_new_int(((py_tf_model_obj_t *) self_in)->width); }
 mp_obj_t py_tf_channels(mp_obj_t self_in) { return mp_obj_new_int(((py_tf_model_obj_t *) self_in)->channels); }
+mp_obj_t py_tf_signed(mp_obj_t self_in) { return mp_obj_new_int(((py_tf_model_obj_t *) self_in)->signed_or_unsigned); }
 
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(py_tf_len_obj, py_tf_len);
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(py_tf_height_obj, py_tf_height);
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(py_tf_width_obj, py_tf_width);
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(py_tf_channels_obj, py_tf_channels);
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(py_tf_signed_obj, py_tf_signed);
 
 STATIC const mp_rom_map_elem_t locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_len), MP_ROM_PTR(&py_tf_len_obj) },
     { MP_ROM_QSTR(MP_QSTR_height), MP_ROM_PTR(&py_tf_height_obj) },
     { MP_ROM_QSTR(MP_QSTR_width), MP_ROM_PTR(&py_tf_width_obj) },
     { MP_ROM_QSTR(MP_QSTR_channels), MP_ROM_PTR(&py_tf_channels_obj) },
+    { MP_ROM_QSTR(MP_QSTR_signed), MP_ROM_PTR(&py_tf_signed_obj) },
     { MP_ROM_QSTR(MP_QSTR_classify), MP_ROM_PTR(&py_tf_classify_obj) },
     { MP_ROM_QSTR(MP_QSTR_segment), MP_ROM_PTR(&py_tf_segment_obj) }
 };
